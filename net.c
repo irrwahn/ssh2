@@ -27,7 +27,8 @@ int net_open_client( const char *host, unsigned short port, const char *bind_add
 	struct sockaddr_in server;
 	struct hostent *he = NULL;
 
-	WHOAMI;
+	//WHOAMI;
+	DPRINT( "%s:%d [%s]", host, port, bind_addr ? bind_addr : "*" );
 	if ( 0 > ( sock = socket( AF_INET, SOCK_STREAM, IPPROTO_TCP ) ) )
 		return perror( "socket()" ), -1;
 	server.sin_port = htons( port );
@@ -41,12 +42,20 @@ int net_open_client( const char *host, unsigned short port, const char *bind_add
 	{
 		struct sockaddr_in lob;
 		lob.sin_family = AF_INET;
-		if ( 0 == inet_aton( bind_addr, (struct in_addr *)&lob.sin_addr.s_addr ) )
+		if ( 0 != strcmp( bind_addr, "*" ) )
 		{
-			fprintf( stderr, "inet_aton() failed" );
-			goto ERROUT;
+			if ( 0 == strcmp( bind_addr, "localhost" ) )
+				bind_addr = "127.0.0.1";
+			lob.sin_family = AF_INET;
+			if ( 0 == inet_aton( bind_addr, (struct in_addr *)&lob.sin_addr.s_addr ) )
+			{
+				fprintf( stderr, "inet_aton() failed\n" );
+				goto ERROUT;
+			}
 		}
-		if ( 0 > bind( sock, (const struct sockaddr*) &lob, sizeof lob ) )
+		else
+			lob.sin_addr.s_addr = INADDR_ANY;
+		if ( 0 > bind( sock, (const struct sockaddr*)&lob, sizeof lob ) )
 		{
 			perror( "bind()" );
 			goto ERROUT;
@@ -94,7 +103,8 @@ int net_open_server( unsigned short port, const char *bind_addr  )
 	int reuse = 1;
 	struct sockaddr_in lob;
 
-	WHOAMI;
+	//WHOAMI;
+	DPRINT( "%d [%s]", port, bind_addr ? bind_addr : "*" );
 	if ( 0 > ( sock = socket( AF_INET, SOCK_STREAM, IPPROTO_TCP ) ) )
 		return perror( "socket()" ), -1;
 	if ( 0 != setsockopt( sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof reuse ) )
@@ -108,11 +118,10 @@ int net_open_server( unsigned short port, const char *bind_addr  )
 	{
 		if ( 0 == strcmp( bind_addr, "localhost" ) )
 			bind_addr = "127.0.0.1";
-		struct sockaddr_in lob;
 		lob.sin_family = AF_INET;
 		if ( 0 == inet_aton( bind_addr, (struct in_addr *)&lob.sin_addr.s_addr ) )
 		{
-			fprintf( stderr, "inet_aton() failed" );
+			fprintf( stderr, "inet_aton() failed\n" );
 			goto ERROUT;
 		}
 	}

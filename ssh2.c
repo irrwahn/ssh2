@@ -7,11 +7,9 @@
  *
  *  Modifed:
  *		2013-05-31	support conncetion forwarding (tunneling) [uw]
+ *		2013-06-03  support reverse conncetion forwarding (tunneling) [uw]
  *
  *  TODO:
- *    Add reverse connection forwarding, using:
- *      LIBSSH2_LISTENER * libssh2_channel_forward_listen(LIBSSH2_SESSION *session, int port);
- *      LIBSSH2_CHANNEL * libssh2_channel_forward_accept(LIBSSH2_LISTENER *listener);
  */
 
 
@@ -75,7 +73,8 @@ struct tunnel_spec {
 	int lport;
 	const char *host;
 	int port;
-	int sock;
+	int sock;					// socket listener (for ltunnels only)
+	LIBSSH2_LISTENER *listener;	// ssh listener (for rtunnels only)
 };
 
 struct client {
@@ -91,7 +90,8 @@ static struct session_info {
 	LIBSSH2_CHANNEL *channel;
 #ifdef WITH_TUNNEL
 	struct tunnel_spec *ltunnel;
-	struct client *lclient;
+	struct tunnel_spec *rtunnel;
+	struct client *client;
 #endif
 } sess = {
 	-1,
@@ -100,9 +100,21 @@ static struct session_info {
 #ifdef WITH_TUNNEL
 	NULL,
 	NULL,
+	NULL,
 #endif
 };
 
+
+#ifdef DEBUG
+static void ssh_err( LIBSSH2_SESSION *session, const char *msg )
+{
+	char *ssh_msg;
+	libssh2_session_last_error( session, &ssh_msg, NULL, 0 );
+	DPRINT( "%s: %s\n", msg, ssh_msg );
+}
+#else
+#define ssh_err(A,B)
+#endif
 
 static int do_askpass( const char *prompt, char *pass, int maxlen, int echo )
 {
@@ -195,7 +207,7 @@ static int do_auth( LIBSSH2_SESSION *session )
 		}
 		else
 		{
-			DPRINT( "libssh2_userauth_list failed.\n" );
+			ssh_err( session, "libssh2_userauth_list()" );
 		}
 		goto DONE;
 	}
@@ -290,19 +302,19 @@ static int add_tunnel( struct tunnel_spec **pt, char *s )
 	*p++ = '\0';
 	t->host = p;
 	if ( NULL == ( p = strrchr( s, ':' ) ) )
-	{	// bind to all interfaces by default, mimicking openssh's bevavior
-		t->bindaddr = "*";
+	{
+		// No bind address given, not even a lone colon.
+		t->bindaddr = "";
 		t->lport = atoi( s );
 	}
 	else
 	{
-		if ( p == s )
-			goto ERR;
-		*p++ = '\0';
 		t->bindaddr = s;
+		*p++ = '\0';
 		t->lport = atoi( p );
 	}
 	t->sock = -1;
+	t->listener = NULL;
 	t->next = *pt;
 	*pt = t;
 	DPRINT( "Tunnel: %s:%d:%s:%d\n", t->bindaddr, t->lport, t->host, t->port );
@@ -323,30 +335,53 @@ static void remove_tunnels( struct tunnel_spec **pt )
 		*pt = t->next;
 		if ( 0 <= t->sock )
 			net_close( t->sock );
+		if ( t->listener )
+			libssh2_channel_forward_cancel( t->listener );
 		free( t );
 	}
 }
 
-static int register_tunnels( struct tunnel_spec *t )
+static int register_ltunnels( struct tunnel_spec *t )
 {
 	WHOAMI;
 	for ( ; NULL != t; t = t->next )
 	{
-		if ( 0 > ( t->sock = net_open_server( t->lport, t->bindaddr ) ) )
+		// An empty bind addresss means bind to any interface.
+		if ( 0 > ( t->sock = net_open_server( t->lport, *t->bindaddr ? t->bindaddr : "*" ) ) )
 		{
 			fprintf( stderr, "Unable to listen on %s:%d\n", t->bindaddr, t->lport );
 			return -1;
 		}
 		else
 		{
-			DPRINT( "Listening on %s:%d\n", t->bindaddr, t->lport );
+			DPRINT( "listening on %s:%d\n", t->bindaddr, t->lport );
 		}
 	}
 	return 0;
 }
 
-static int add_client( struct client **lp, struct tunnel_spec *t, LIBSSH2_SESSION *session )
+static int register_rtunnels( struct tunnel_spec *t, LIBSSH2_SESSION *session )
 {
+	WHOAMI;
+	int bp;
+	for ( ; NULL != t; t = t->next )
+	{
+		// An empty bind addresss indicates bind to loopback only.
+		if ( NULL ==  ( t->listener = libssh2_channel_forward_listen_ex(
+							session, *t->bindaddr ? t->bindaddr : NULL,
+							t->lport, &bp, 5 ) ) )
+		{
+			ssh_err( session, "libssh2_channel_forward_listen()" );
+			return -1;
+		}
+		DPRINT( "remote host bound listener to port %d [%s]\n", bp, *t->bindaddr ? t->bindaddr : "loopback" );
+	}
+	return 0;
+}
+
+static int add_lclient( struct client **lp, struct tunnel_spec *t, LIBSSH2_SESSION *session )
+{
+	WHOAMI;
 	int sock = -1;
 	struct client *cp = NULL;
 	LIBSSH2_CHANNEL *channel;
@@ -373,13 +408,11 @@ static int add_client( struct client **lp, struct tunnel_spec *t, LIBSSH2_SESSIO
 			&& LIBSSH2_ERROR_EAGAIN == libssh2_session_last_errno( session ) )
 	{
 		/* Why, oh, why does the first call to libssh2_channel_direct_tcpip()
-		   spuriously  fail with 'WOULD BLOCK' every so often? */
+		   spuriously fail with 'WOULD BLOCK' every so often? */
 		usleep( 50000 );	// Uck! Yuck! Bleah!
 		if ( NULL == ( channel = libssh2_channel_direct_tcpip( session, t->host, t->port ) ) )
 		{
-			char *msg;
-			libssh2_session_last_error( session, &msg, NULL, 0 );
-			fprintf( stderr, "libssh2_channel_direct_tcpip(): %s\n", msg );
+			ssh_err( session, "libssh2_channel_direct_tcpip()" );
 			goto ERR;
 		}
 	}
@@ -398,10 +431,53 @@ ERR:
 	return -1;
 }
 
+static int add_rclient( struct client **lp, struct tunnel_spec *t )
+{
+	//WHOAMI;
+	int sock = -1;
+	struct client *cp = NULL;
+	LIBSSH2_CHANNEL *channel;
+
+	// this will fail regularly, as we're calling it in a polling fashion
+	if ( NULL == ( channel = libssh2_channel_forward_accept( t->listener ) ) )
+	{
+		//ssh_err( session, "libssh2_channel_forward_accept()" );
+		return -1;
+	}
+	if ( 0 > ( sock = net_open_client( t->host, t->port, "*" ) ) )
+		goto ERR;
+	struct timeval to = { 2, 0 };
+	if ( 0 != setsockopt( sock, SOL_SOCKET, SO_SNDTIMEO, &to, sizeof to ) )
+		goto ERR;
+	if ( NULL == ( cp = malloc( sizeof *cp ) ) )
+		goto ERR;
+	libssh2_channel_set_blocking( channel, 0 );
+	cp->sock = sock;
+	cp->channel = channel;
+	cp->prev = NULL;
+	cp->next = *lp;
+	if ( cp->next )
+		cp->next->prev = cp;
+	*lp = cp;
+	return 0;
+ERR:
+	net_close( sock );
+	libssh2_channel_close( channel );
+	libssh2_channel_free( channel );
+	return -1;
+}
+
 static void del_client( struct client **lp, struct client *cp )
 {
-	libssh2_channel_free( cp->channel );
-	net_close( cp->sock );
+	WHOAMI;
+	if ( cp->channel )
+	{
+		libssh2_channel_send_eof( cp->channel );
+		libssh2_channel_close( cp->channel );
+		libssh2_channel_free( cp->channel );
+	}
+	if ( 0 <= cp->sock )
+		net_close( cp->sock );
 	if ( cp->next )
 		cp->next->prev = cp->prev;
 	if ( cp->prev )
@@ -427,7 +503,6 @@ static int pump2chan( int fd, LIBSSH2_CHANNEL *channel )
 		goto FAIL;
 	return 0;
 FAIL:
-	libssh2_channel_send_eof( channel );
 	return -1;
 }
 
@@ -492,7 +567,7 @@ static void do_session( void )
 			if ( fdmax < t->sock )
 				fdmax = t->sock;
 		}
-		for ( c = sess.lclient; NULL != c; c =  c->next )
+		for ( c = sess.client; NULL != c; c =  c->next )
 		{
 			if ( 0 <= c-> sock )
 			{
@@ -523,6 +598,7 @@ static void do_session( void )
 			{
 				if ( 0 != pump2chan( 0, sess.channel ) )
 				{
+					libssh2_channel_send_eof( sess.channel );
 					eof = 1;
 					continue;
 				}
@@ -539,15 +615,20 @@ static void do_session( void )
 					continue;
 				}
 #ifdef WITH_TUNNEL
-				// poll tunnel channels for data
-				for ( c = sess.lclient; NULL != c; c = cnext )
+				// poll client channels for data
+				for ( c = sess.client; NULL != c; c = cnext )
 				{
 					cnext = c->next;
 					if ( 0 != pump2fd( c->sock, c->channel ) )
 					{
 						DPRINT( "pump2fd failed.\n" );
-						del_client( &sess.lclient, c );
+						del_client( &sess.client, c );
 					}
+				}
+				// poll rtunnel listener for incoming connections
+				for ( t = sess.rtunnel; NULL != t; t =  t->next )
+				{
+					add_rclient( &sess.client, t );
 				}
 #endif
 				if ( ++nfd >= nfdrdy )
@@ -555,7 +636,7 @@ static void do_session( void )
 			}
 #ifdef WITH_TUNNEL
 			// check local client sockets for data
-			for ( c = sess.lclient; NULL != c && nfd < nfdrdy; c = cnext )
+			for ( c = sess.client; NULL != c && nfd < nfdrdy; c = cnext )
 			{
 				cnext = c->next;
 				if ( FD_ISSET( c->sock, &rfds ) )
@@ -563,17 +644,17 @@ static void do_session( void )
 					if ( 0 != pump2chan( c->sock, c->channel ) )
 					{
 						DPRINT( "pump2chan failed.\n" );
-						del_client( &sess.lclient, c );
+						del_client( &sess.client, c );
 					}
 					++nfd;
 				}
 			}
-			// check listener sockets for incoming connections
+			// check local listener sockets for incoming connections
 			for ( t = sess.ltunnel; NULL != t && nfd < nfdrdy; t =  t->next )
 			{
 				if ( FD_ISSET( t->sock, &rfds ) )
 				{
-					if ( 0 != add_client( &sess.lclient, t, sess.session ) )
+					if ( 0 != add_lclient( &sess.client, t, sess.session ) )
 					{
 						DPRINT( "add_client failed!\n" );
 					}
@@ -582,12 +663,12 @@ static void do_session( void )
 			}
 #endif
 		}
-	}	// while ( !eof )
+	}	// end while ( !eof )
 
 #ifdef WITH_TUNNEL
 	// shutdown all tunnel clients
-	while ( NULL != sess.lclient )
-		del_client( &sess.lclient, sess.lclient );
+	while ( NULL != sess.client )
+		del_client( &sess.client, sess.client );
 #endif
 	if ( !config.nostdin )
 		tcsetattr( 0, TCSANOW, &oback );
@@ -608,6 +689,8 @@ static void usage( const char *me )
 #ifdef WITH_TUNNEL
 		"  -L [bind_address:]port:host:hostport\n"
 		"       Forward conections on local port to hostport on host.\n"
+		"  -R [bind_address:]port:host:hostport\n"
+		"       Reverse forward conections on remote port to hostport on host.\n"
 #endif
 		"  -N   Do not execute a remote command.\n"
 		"  -n   Prevent reading from stdin.\n"
@@ -621,7 +704,7 @@ static int do_config( int argc, char *argv[] )
 	char keyf[256];
 	const char *ostr = "-:hb:i:l:p:fnN"
 #ifdef WITH_TUNNEL
-		"L:"
+		"L:R:"
 #endif
 		;
 
@@ -679,6 +762,10 @@ static int do_config( int argc, char *argv[] )
 #ifdef WITH_TUNNEL
 		case 'L':
 			if ( 0 != add_tunnel( &sess.ltunnel, optarg ) )
+				return -1;
+			break;
+		case 'R':
+			if ( 0 != add_tunnel( &sess.rtunnel, optarg ) )
 				return -1;
 			break;
 #endif
@@ -786,7 +873,7 @@ int main( int argc, char *argv[] )
 		goto net_no_connect;
 	}
 #ifdef WITH_TUNNEL
-	if ( 0 != register_tunnels( sess.ltunnel ) )
+	if ( 0 != register_ltunnels( sess.ltunnel ) )
 	{
 		err = -1;
 		goto ssh2_no_session;
@@ -798,12 +885,13 @@ int main( int argc, char *argv[] )
 	if ( NULL == ( sess.session = libssh2_session_init() ) )
 	{
 		err = -1;
-		fprintf( stderr, "Failure to create SSH session\n" );
+		fprintf( stderr, "Failed to create SSH session\n" );
 		goto ssh2_no_session;
 	}
 	if ( 0 != ( err = libssh2_session_handshake( sess.session, sess.sock ) ) )
 	{
-		fprintf( stderr, "Failure establishing SSH session (%d)\n", err );
+		ssh_err( sess.session, "libssh2_session_handshake()" );
+		fprintf( stderr, "Failed establishing SSH session (%d)\n", err );
 		goto ssh2_no_handshake;
 	}
 	if ( 0 > do_auth( sess.session ) )
@@ -815,11 +903,21 @@ int main( int argc, char *argv[] )
 	if ( NULL == ( sess.channel = libssh2_channel_open_session( sess.session ) ) )
 	{
 		err = -1;
+		ssh_err( sess.session, "libssh2_channel_open_session()" );
 		fprintf( stderr, "Unable to open a channel\n" );
 		goto ssh2_no_channel;
 	}
+#ifdef WITH_TUNNEL
+	if ( 0 != register_rtunnels( sess.rtunnel, sess.session ) )
+	{
+		err = -1;
+		goto ssh2_no_pty;
+	}
+#endif
+
 	if ( 0 != ( err = libssh2_channel_request_pty( sess.channel, config.term ) ) )
 	{
+		ssh_err( sess.session, "libssh2_channel_request_pty()" );
 		fprintf( stderr, "Failed requesting pty (%d)\n", err) ;
 		goto ssh2_no_pty;
 	}
@@ -844,6 +942,7 @@ int main( int argc, char *argv[] )
 				: libssh2_channel_shell( sess.channel );
 		if ( 0 != err )
 		{
+			ssh_err( sess.session, "libssh2_channel_exec()" );
 			fprintf( stderr, "Unable to execute command on allocated pty (%d)\n", err );
 			goto ssh2_no_shell;
 		}
@@ -860,6 +959,9 @@ ssh2_no_shell:
 	signal( SIGWINCH, SIG_DFL );
 
 ssh2_no_pty:
+#ifdef WITH_TUNNEL
+	remove_tunnels( &sess.rtunnel );
+#endif
 	if ( sess.channel )
 	{
 		libssh2_channel_free( sess.channel );
