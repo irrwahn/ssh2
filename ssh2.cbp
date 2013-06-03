@@ -65,9 +65,12 @@
 		<Compiler>
 			<Add option="-Wall" />
 		</Compiler>
+		<Unit filename="LICENSE_MIT" />
+		<Unit filename="LICENSE_WTFPL" />
 		<Unit filename="Makefile">
 			<Option target="ssh2.arm" />
 		</Unit>
+		<Unit filename="README" />
 		<Unit filename="log.h">
 			<Option target="ssh2.arm" />
 		</Unit>
