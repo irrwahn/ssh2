@@ -36,9 +36,10 @@ POSIX conformant operating systems.
 
 Ssh2 depends on the following libraries to be present on your system:
   libssh2
-  libssl
   libz
-  libgcrypt or libcrypto
+  libcrypto and libssl
+	- or -
+  libgcrypt and libgpg-error
 In case you want it to work with passphrase protected private keys you
 should make sure your copy of libssh2 is build with libcrypto support,
 not libgcrypt.
@@ -71,7 +72,7 @@ screw up, break something or lose data or money: Go sue yourself! We do not
 guarantee ssh2 is free of security flaws or any other blunder. For all it's
 worth, it might be a toal bugfest. Feel free to fix it. All credits and
 complaints regarding the underlying cryptographic and basic secure shell
-functionality got to the respective maintainers of the above mentioned
+functionality go to the respective maintainers of the above mentioned
 libraries.
 
 If you do not agree with these terms, then you are advised to not use the
