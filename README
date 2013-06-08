@@ -41,7 +41,7 @@ Ssh2 depends on the following libraries to be present on your system:
 	- or -
   libgcrypt and libgpg-error
 In case you want it to work with passphrase protected private keys you
-should make sure your copy of libssh2 is build with libcrypto support,
+should make sure your copy of libssh2 is built with libcrypto support,
 not libgcrypt.
 
 1. Build manually
