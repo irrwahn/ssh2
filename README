@@ -44,16 +44,27 @@ In case you want it to work with passphrase protected private keys you
 should make sure your copy of libssh2 is build with libcrypto support,
 not libgcrypt.
 
+1. Build manually
+
 Provided you have the necessary libraries and their respective header files
 in a place where your toolchain is able to pick them up, something like
 that should suffice to build ssh2:
 
-gcc ssh2.c net.c -DWITH_TUNNEL -lssh2 -lssl -lcrypto -lz -o ssh2
+  gcc ssh2.c net.c -DWITH_TUNNEL -lssh2 -lssl -lcrypto -lz -o ssh2
 
 You may omit the -DWITH_TUNNEL, if you like to go without the port
 forwarding features. This will somewhat reduce the executable size.
 If you are curious or feel something is wrong you can throw in a -DDEBUG to
 make ssh2 tell a bit more about what is going on.
+
+2. CMake assisted build
+
+Requires installation of the CMake build system, version >=2.6. In the 
+project directory simply issue the following command sequence: 
+
+  cmake CMakeLists.txt && make
+  
+You might also want to tweak the defines (see above) in CMakeLists.txt.
 
 
 DISCLAIMER
