@@ -1,11 +1,16 @@
 cmake_minimum_required( VERSION 2.6 )
 set( VERBOSE 1 )
 
+# executable name
 set( XNAME ssh2 )
+
+# comment next line to disable port forwarding
 add_definitions( -DWITH_TUNNEL )
+
 # uncomment next line to enable runtime debug output
 # add_definitions( -DDEBUG )
 
+# basic settings
 project( $XNAME )
 set( TNAME ssh2_ )	
 set( TSRC ssh2.c net.c )
