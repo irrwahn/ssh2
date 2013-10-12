@@ -52,6 +52,7 @@ static struct settings {
 	int noxcmd;
 	int nostdin;
 	int background;
+	int keepalive;
 } config = {
 	NULL,
 	NULL,
@@ -60,6 +61,7 @@ static struct settings {
 	NULL,
 	NULL,
 	NULL,
+	0,
 	0,
 	0,
 	0,
@@ -533,6 +535,8 @@ static void do_session( void )
 	struct timeval tv;
 	int fdmax, nfd, nfdrdy;
 	int eof = 0;
+	//TODO: add to session_info and make configurable
+	int ka_count;
 
 	if ( !config.nostdin )
 	{
@@ -546,7 +550,10 @@ static void do_session( void )
 	 * but we read from a channel!
 	 */
 	libssh2_channel_set_blocking( sess.channel, 0 );
-
+	if (config.keepalive > 0){
+		ka_count = config.keepalive;
+		libssh2_keepalive_config(sess.session, 1, ka_count);
+	}
 	while ( !eof )
 	{
 		if ( winched )
@@ -588,7 +595,11 @@ static void do_session( void )
 				eof = 1;
 		}
 		else if ( 0 == nfdrdy )
-		{ 	// timeout
+		{	// timeout
+			if (0 < config.keepalive && --ka_count<=0){
+				libssh2_keepalive_send(sess.session, &ka_count);
+				DPRINT("Keepalive sent, sleep for %d\r\n",ka_count);
+			}
 		}
 		else
 		{
@@ -695,6 +706,8 @@ static void usage( const char *me )
 		"  -N   Do not execute a remote command.\n"
 		"  -n   Prevent reading from stdin.\n"
 		"  -f   Go to background just before command execution.\n"
+		"  -k interval\n"
+		"       Send keepalive request every <interval> seconds.\n"
 	);
 }
 
@@ -702,7 +715,7 @@ static int do_config( int argc, char *argv[] )
 {
 	int opt;
 	char keyf[256];
-	const char *ostr = "-:hb:i:l:p:fnN"
+	const char *ostr = "-:hb:i:l:p:fnNk:"
 #ifdef WITH_TUNNEL
 		"L:R:"
 #endif
@@ -758,6 +771,9 @@ static int do_config( int argc, char *argv[] )
 			break;
 		case 'p':
 			config.port = atoi( optarg );
+			break;
+		case 'k':
+			config.keepalive = atoi( optarg );
 			break;
 #ifdef WITH_TUNNEL
 		case 'L':
