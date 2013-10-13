@@ -535,7 +535,6 @@ static void do_session( void )
 	struct timeval tv;
 	int fdmax, nfd, nfdrdy;
 	int eof = 0;
-	//TODO: add to session_info and make configurable
 	int ka_count;
 
 	if ( !config.nostdin )
