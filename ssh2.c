@@ -43,7 +43,7 @@ static volatile sig_atomic_t winched;
 static struct settings {
 	const char *login;
 	const char *hostname;
-	const char *command;
+	char *command;
 	const char *public;
 	const char *private;
 	const char *term;
@@ -53,6 +53,7 @@ static struct settings {
 	int nostdin;
 	int background;
 	int keepalive;
+	int reqpty;
 } config = {
 	NULL,
 	NULL,
@@ -61,6 +62,7 @@ static struct settings {
 	NULL,
 	NULL,
 	NULL,
+	0,
 	0,
 	0,
 	0,
@@ -123,17 +125,24 @@ static int do_askpass( const char *prompt, char *pass, int maxlen, int echo )
 	struct termios options;
 	char *p;
 	int res = -1;
+	int fd;
 
-	fputs( prompt, stdout );
 	if ( config.nostdin )
 		return res;
+
+	fd = open("/dev/tty", O_RDWR);
+
+	if (0 > fd) return res;
+
+	write(fd, prompt, strlen(prompt));
+
 	if ( !echo )
 	{
-		tcgetattr( 0, &options );
+		tcgetattr( fd, &options );
 		options.c_lflag &= ~ECHO;
-		tcsetattr( 0, TCSANOW, &options );
+		tcsetattr( fd, TCSANOW, &options );
 	}
-	if ( fgets( pass, maxlen, stdin ) )
+	if ( read(fd, pass, maxlen) > 0 )
 	{
 		res = 0;
 		while ( NULL != ( p = strchr( pass, '\r' ) )
@@ -144,11 +153,15 @@ static int do_askpass( const char *prompt, char *pass, int maxlen, int echo )
 		*pass = '\0';
 	if ( !echo )
 	{
-		tcgetattr( 0, &options );
+		tcgetattr( fd, &options );
 		options.c_lflag |= ECHO;
-		tcsetattr( 0, TCSANOW, &options );
-		putc( '\n', stdout );
+		tcsetattr( fd, TCSANOW, &options );
+		write(fd, "\n", 1);
 	}
+
+	if (fd)
+	    close(fd);
+
 	return res;
 }
 
@@ -489,7 +502,6 @@ static void del_client( struct client **lp, struct client *cp )
 	free( cp );
 }
 #endif
-
 static int pump2chan( int fd, LIBSSH2_CHANNEL *channel )
 {
 	int nread;
@@ -615,6 +627,7 @@ static void do_session( void )
 				if ( ++nfd >= nfdrdy )
 					continue;
 			}
+
 			// forward ssh channel data
 			if ( FD_ISSET( sess.sock, &rfds ) )
 			{
@@ -644,6 +657,7 @@ static void do_session( void )
 				if ( ++nfd >= nfdrdy )
 					continue;
 			}
+
 #ifdef WITH_TUNNEL
 			// check local client sockets for data
 			for ( c = sess.client; NULL != c && nfd < nfdrdy; c = cnext )
@@ -696,6 +710,8 @@ static void usage( const char *me )
 		"  -i identity_file\n"
 		"  -l login_name\n"
 		"  -p hostport\n"
+		"  -t   Force request pty\n"
+		"  -T   Don't request pty\n"
 #ifdef WITH_TUNNEL
 		"  -L [bind_address:]port:host:hostport\n"
 		"       Forward conections on local port to hostport on host.\n"
@@ -714,7 +730,7 @@ static int do_config( int argc, char *argv[] )
 {
 	int opt;
 	char keyf[256];
-	const char *ostr = "-:hb:i:l:p:fnNk:"
+	const char *ostr = "+:hb:i:l:p:fnNk:tT"
 #ifdef WITH_TUNNEL
 		"L:R:"
 #endif
@@ -724,30 +740,15 @@ static int do_config( int argc, char *argv[] )
 		config.term = "vanilla";
 	config.login = getenv( "USER" );
 	config.port = 22;
+	config.reqpty = isatty(0);
 
 	while ( -1 != ( opt = getopt( argc, argv, ostr ) ) )
 	{
 		switch ( opt )
 		{
-		case 1:
-			if ( NULL == config.hostname )
-			{
-				char *at;
-				config.hostname = optarg;
-				if ( NULL != ( at = strchr( config.hostname, '@' ) ) )
-				{
-					*at++ = 0;
-					config.login = config.hostname;
-					config.hostname = at;
-				}
-			}
-			else if ( NULL == config.command )
-				config.command = optarg;
-			else
-			{
-				fprintf( stderr, "Excess non-option argument '%s'\n", optarg );
-				return -1;
-			}
+		case 't': //openssh tries to second-guess the user ("-t -t" is needed on non-tty), but we don't
+		case 'T':
+			config.reqpty = ('t' == opt);
 			break;
 		case 'b':
 			config.bindaddr = optarg;
@@ -796,6 +797,29 @@ static int do_config( int argc, char *argv[] )
 			break;
 		}
 	}
+
+	if (optind < argc) {
+		config.hostname=argv[optind++];
+		char *at;
+		if ( NULL != ( at = strchr( config.hostname, '@' ) ) ){
+				*at++ = 0;
+				config.login = config.hostname;
+				config.hostname = at;
+		}
+		char *p;
+		int blen = 0;
+		while (optind < argc){
+		    blen += strlen(argv[optind] + 2);
+		    DPRINT ("blen: %d\n", blen);
+		    p = realloc(config.command, blen);
+		    //TODO realloc failure handling
+		    if (NULL == config.command) *p = '\0';
+		    sprintf (p + strlen(p), "%s ", argv[optind++]);
+		    config.command = p;
+		    blen = strlen(p);
+		}
+	}
+
 	if ( !config.hostname || !*config.hostname )
 	{
 		fprintf( stderr, "No host specified\n" );
@@ -929,16 +953,18 @@ int main( int argc, char *argv[] )
 		goto ssh2_no_pty;
 	}
 #endif
+	if (config.reqpty){
+	    DPRINT ("Requesting PTY\n");
+	    if ( 0 != ( err = libssh2_channel_request_pty( sess.channel, config.term ) ) )
+	    {
+		    ssh_err( sess.session, "libssh2_channel_request_pty()" );
+		    fprintf( stderr, "Failed requesting pty (%d)\n", err) ;
+		    goto ssh2_no_pty;
+	    }
 
-	if ( 0 != ( err = libssh2_channel_request_pty( sess.channel, config.term ) ) )
-	{
-		ssh_err( sess.session, "libssh2_channel_request_pty()" );
-		fprintf( stderr, "Failed requesting pty (%d)\n", err) ;
-		goto ssh2_no_pty;
+	    do_resize_pty( sess.channel );
+	    signal( SIGWINCH, handle_sigwinch );
 	}
-
-	do_resize_pty( sess.channel );
-	signal( SIGWINCH, handle_sigwinch );
 	if ( config.background )
 	{
 		DPRINT( "going to background" );
@@ -969,7 +995,7 @@ int main( int argc, char *argv[] )
 	do_session();
 	signal( SIGINT, SIG_DFL );
 	signal( SIGSTOP, SIG_DFL );
-
+	free(config.command);
 ssh2_no_shell:
 	signal( SIGWINCH, SIG_DFL );
 
