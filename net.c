@@ -3,6 +3,7 @@
  *
  *  Created on: Mar 8, 2013
  *      Author: volpol
+ *  See LICENSE file for more details.
  *  Modifed:
  *		2013-05-31	support bind address, statics no more [uw]
  */

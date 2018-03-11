@@ -3,6 +3,7 @@
  *
  *  Created on: Jul 5, 2012
  *      Author: volpol
+ *  See LICENSE file for more details.
  */
 
 #ifndef LOG_H_

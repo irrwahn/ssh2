@@ -4,6 +4,7 @@
  *  Incomplete open-ssh drop-in replacement.
  *
  *  Based on libssh2 example. Enhanced by volpol, uw.
+ *  See LICENSE file for more details.
  *
  *  Modifed:
  *		2013-05-31	support conncetion forwarding (tunneling) [uw]

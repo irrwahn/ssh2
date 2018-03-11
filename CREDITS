@@ -1,0 +1,18 @@
+# Credits-file of people that have contributed to the ssh2 project,
+# in alphabetical order.
+#
+# The fields are:
+# (N)ame, (E)mail, (W)eb-address, (D)escription, (S)nail-mail address
+
+N: volpol
+D: net and log modules
+D: Hacking
+D: Testing
+S: Germany
+
+N: Urban Wallasch
+E: <irrwahn35@freenet.de>
+D: Hacking
+D: Testing
+S: Germany
+

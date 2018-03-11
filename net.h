@@ -3,6 +3,7 @@
  *
  *  Created on: Mar 8, 2013
  *      Author: volpol
+ *  See LICENSE file for more details.
  */
 
 #ifndef NET_H_
