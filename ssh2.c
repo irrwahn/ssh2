@@ -816,8 +816,6 @@ static int do_config( int argc, char *argv[] )
 			p = realloc( config.command, blen );
 			if ( NULL == p )
 				return -1;
-			if ( NULL == config.command )
-				*p = '\0';
 			config.command = p;
 			sprintf( config.command + slen, "%s ", argv[optind++] );
 			slen = blen - 1;
