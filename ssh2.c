@@ -129,20 +129,16 @@ static int do_askpass( const char *prompt, char *pass, int maxlen, int echo )
 
 	if ( config.nostdin )
 		return res;
-
-	fd = open("/dev/tty", O_RDWR);
-
-	if (0 > fd) return res;
-
-	write(fd, prompt, strlen(prompt));
-
+	if ( 0 > ( fd = open( "/dev/tty", O_RDWR ) ) )
+		return res;
+	write( fd, prompt, strlen( prompt ) );
 	if ( !echo )
 	{
 		tcgetattr( fd, &options );
 		options.c_lflag &= ~ECHO;
 		tcsetattr( fd, TCSANOW, &options );
 	}
-	if ( read(fd, pass, maxlen) > 0 )
+	if ( 0 < read( fd, pass, maxlen ) )
 	{
 		res = 0;
 		while ( NULL != ( p = strchr( pass, '\r' ) )
@@ -156,12 +152,10 @@ static int do_askpass( const char *prompt, char *pass, int maxlen, int echo )
 		tcgetattr( fd, &options );
 		options.c_lflag |= ECHO;
 		tcsetattr( fd, TCSANOW, &options );
-		write(fd, "\n", 1);
+		write( fd, "\n", 1 );
 	}
-
-	if (fd)
-	    close(fd);
-
+	if ( fd )
+	    close( fd );
 	return res;
 }
 
@@ -502,6 +496,7 @@ static void del_client( struct client **lp, struct client *cp )
 	free( cp );
 }
 #endif
+
 static int pump2chan( int fd, LIBSSH2_CHANNEL *channel )
 {
 	int nread;
@@ -627,7 +622,6 @@ static void do_session( void )
 				if ( ++nfd >= nfdrdy )
 					continue;
 			}
-
 			// forward ssh channel data
 			if ( FD_ISSET( sess.sock, &rfds ) )
 			{
@@ -711,7 +705,7 @@ static void usage( const char *me )
 		"  -l login_name\n"
 		"  -p hostport\n"
 		"  -t   Force request pty\n"
-		"  -T   Don't request pty\n"
+		"  -T   Do not request pty\n"
 #ifdef WITH_TUNNEL
 		"  -L [bind_address:]port:host:hostport\n"
 		"       Forward conections on local port to hostport on host.\n"
@@ -740,15 +734,18 @@ static int do_config( int argc, char *argv[] )
 		config.term = "vanilla";
 	config.login = getenv( "USER" );
 	config.port = 22;
-	config.reqpty = isatty(0);
+	config.reqpty = isatty( 0 );
 
 	while ( -1 != ( opt = getopt( argc, argv, ostr ) ) )
 	{
 		switch ( opt )
 		{
-		case 't': //openssh tries to second-guess the user ("-t -t" is needed on non-tty), but we don't
+        /* openssh tries to second-guess the user ("-t -t" is needed
+         * on non-tty), but we don't
+         */
+		case 't':
 		case 'T':
-			config.reqpty = ('t' == opt);
+			config.reqpty = ( 't' == opt );
 			break;
 		case 'b':
 			config.bindaddr = optarg;
@@ -798,25 +795,32 @@ static int do_config( int argc, char *argv[] )
 		}
 	}
 
-	if (optind < argc) {
-		config.hostname=argv[optind++];
+	if ( optind < argc )
+	{
+		config.hostname = argv[optind++];
 		char *at;
-		if ( NULL != ( at = strchr( config.hostname, '@' ) ) ){
-				*at++ = 0;
-				config.login = config.hostname;
-				config.hostname = at;
+		if ( NULL != ( at = strchr( config.hostname, '@' ) ) )
+		{
+			*at++ = 0;
+			config.login = config.hostname;
+			config.hostname = at;
 		}
-		char *p;
-		int blen = 0;
-		while (optind < argc){
-		    blen += strlen(argv[optind] + 2);
-		    DPRINT ("blen: %d\n", blen);
-		    p = realloc(config.command, blen);
-		    //TODO realloc failure handling
-		    if (NULL == config.command) *p = '\0';
-		    sprintf (p + strlen(p), "%s ", argv[optind++]);
-		    config.command = p;
-		    blen = strlen(p);
+		int blen = 1;
+		int slen = 0;
+		while ( optind < argc )
+		{
+			char *p;
+			blen += strlen( argv[optind] ) + 1;
+			//DPRINT( "blen: %d\n", blen );
+			p = realloc( config.command, blen );
+			if ( NULL == p )
+				return -1;
+			if ( NULL == config.command )
+				*p = '\0';
+			config.command = p;
+			sprintf( config.command + slen, "%s ", argv[optind++] );
+			slen = blen - 1;
+			//DPRINT( "config.command = '%s'\n", config.command );
 		}
 	}
 
@@ -995,7 +999,7 @@ int main( int argc, char *argv[] )
 	do_session();
 	signal( SIGINT, SIG_DFL );
 	signal( SIGSTOP, SIG_DFL );
-	free(config.command);
+
 ssh2_no_shell:
 	signal( SIGWINCH, SIG_DFL );
 
@@ -1025,5 +1029,6 @@ net_no_connect:
 	libssh2_exit();
 
 ssh2_no_init:
+	free( config.command );
 	return err;
 }
